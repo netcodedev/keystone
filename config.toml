@@ -1,0 +1,13 @@
+[server]
+host="0.0.0.0"
+port=8080
+
+[database]
+url="ws://localhost:8000"
+username="root"
+password="root"
+namespace="keystone"
+database="keystone"
+
+[security]
+enable_security_headers=true
