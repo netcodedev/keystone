@@ -3,10 +3,13 @@ use std::process::ExitCode;
 use include_dir::Dir;
 use tracing::info;
 
-use crate::{config::Config, db::{migrations::Migrations, Database}};
+use crate::{
+    config::Config,
+    db::{Database, migrations::Migrations},
+};
 
-pub mod db;
 pub mod config;
+pub mod db;
 
 pub struct WithConfig<C: Config> {
     pub config: C,
@@ -28,7 +31,10 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState> {
         }
     }
 
-    pub fn with_migrations(self, migrations_dir: Dir<'static>) -> Application<ConfigState, WithMigrations> {
+    pub fn with_migrations(
+        self,
+        migrations_dir: Dir<'static>,
+    ) -> Application<ConfigState, WithMigrations> {
         Application {
             config: self.config,
             migrations: WithMigrations(Migrations::new(migrations_dir)),
@@ -46,7 +52,7 @@ impl Application {
 }
 
 impl<C: Config> Application<WithConfig<C>, WithMigrations> {
-    pub async fn start(&self) -> ExitCode{
+    pub async fn start(&self) -> ExitCode {
         // ----- Connect to the database -----
         let db_client = match Database::connect(&self.config.config.get_database_config()).await {
             Ok(db) => db,
@@ -59,9 +65,7 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations> {
         // ----- Check database migrations -----
         match self.migrations.0.has_pending_migrations(&db_client).await {
             Ok(true) => {
-                tracing::error!(
-                    "Database is not up to date"
-                );
+                tracing::error!("Database is not up to date");
                 return ExitCode::FAILURE;
             }
             Err(err) => {
@@ -83,11 +87,15 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations> {
             }
         };
 
-        self.migrations.0.clone().run_migrations(&db_client, self.config.config.get_instance_id().unwrap_or_else(|| "default".to_string())).await?;
+        if let Some(instance_id) = self.config.config.get_instance_id() {
+            self.migrations
+                .0
+                .clone()
+                .run_migrations(&db_client, instance_id)
+                .await?;
+        }
         Ok(())
     }
 }
 
-impl<WithConfig, WithoutMigrations> Application<WithConfig, WithoutMigrations> {
-
-}
+impl<WithConfig, WithoutMigrations> Application<WithConfig, WithoutMigrations> {}

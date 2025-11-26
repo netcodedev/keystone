@@ -160,7 +160,8 @@ impl Migrations {
         &self,
         last_applied_id: &Option<String>,
     ) -> Result<Vec<(String, String)>, MigrationError> {
-        let mut migrations: Vec<(String, &File<'_>)> = self.migrations_dir
+        let mut migrations: Vec<(String, &File<'_>)> = self
+            .migrations_dir
             .files()
             .filter(|file| file.path().extension().is_some_and(|ext| ext == "surql"))
             .map(|file| {
