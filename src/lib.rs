@@ -93,7 +93,9 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations, WithoutRouter> {
         }
         ExitCode::SUCCESS
     }
+}
 
+impl<C: Config, RouterState> Application<WithConfig<C>, WithMigrations, RouterState> {
     pub async fn run_migrations(&self) -> Result<(), Box<dyn std::error::Error>> {
         info!("Running migrations...");
         // ----- Connect to the database -----
