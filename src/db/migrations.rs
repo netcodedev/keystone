@@ -42,12 +42,12 @@ struct AppliedMigration {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct SchemaLock {
-    id: RecordId,
-    locked: bool,
+pub struct SchemaLock {
+    pub id: RecordId,
+    pub locked: bool,
     #[serde(with = "time::serde::rfc3339::option", default)]
-    locked_at: Option<OffsetDateTime>,
-    instance_id: Option<String>,
+    pub locked_at: Option<OffsetDateTime>,
+    pub instance_id: Option<String>,
 }
 
 impl Default for SchemaLock {

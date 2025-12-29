@@ -115,6 +115,28 @@ impl<C: Config, RouterState> Application<WithConfig<C>, WithMigrations, RouterSt
         }
         Ok(())
     }
+
+    pub async fn unlock(&self, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+        // ----- Connect to the database -----
+        let db_client = match Database::connect(&self.config.config.get_database_config()).await {
+            Ok(db) => db,
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
+        if Database::is_locked(&db_client).await? {
+            if force {
+                info!("Unlocking database (FORCE)...");
+                Database::force_unlock(&db_client).await?;
+            } else {
+                return Err("Database is locked. Use --force to unlock.".into());
+            }
+        } else {
+            info!("Database is not locked.");
+        }
+        Ok(())
+    }
 }
 
 impl<C: Config> Application<WithConfig<C>, WithoutMigrations, WithoutRouter> {

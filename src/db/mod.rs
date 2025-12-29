@@ -112,6 +112,20 @@ impl Database {
         }
     }
 
+    pub async fn is_locked(db: &Surreal<Any>) -> Result<bool, DBError> {
+        let mut result = db.query("SELECT * FROM schema_lock").await?;
+        let locks: Vec<migrations::SchemaLock> = result
+            .take(0)
+            .map_err(|e| DBError::Database(format!("Failed to fetch schema lock status: {}", e)))?;
+
+        if let Some(lock) = locks.first() {
+            Ok(lock.locked)
+        } else {
+            // If no lock record exists, it's effectively not locked (or not initialized)
+            Ok(false)
+        }
+    }
+
     pub async fn user_has_permission(db: &Surreal<Any>, permission: &str) -> Result<bool, DBError> {
         let has_permission: bool = db
             .run("fn::auth_user_has_permission")
