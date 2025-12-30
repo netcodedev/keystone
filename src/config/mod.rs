@@ -1,4 +1,6 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, path::PathBuf};
+
+use config::{Environment, File};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,38 +16,43 @@ pub trait Config: Serialize + for<'de> Deserialize<'de> {
     fn get_security_config(&self) -> SecurityConfig;
     fn get_instance_id(&self) -> Option<String>;
 
-    fn load(default_system_path: &str, local_dev_path: &str) -> Result<Self, ConfigError> where Self: Sized + for<'de> serde::Deserialize<'de>{
+    fn load(default_system_path: &str, local_dev_path: &str) -> Result<Self, ConfigError>
+    where
+        Self: Sized + for<'de> serde::Deserialize<'de>,
+    {
+        let mut builder = config::Config::builder();
+
         // 1. Determine config file path using our helper function
-        let config_path = Self::get_config_path(default_system_path, local_dev_path)?;
+        match Self::get_config_path(default_system_path, local_dev_path) {
+            Ok(path) => {
+                tracing::debug!("Loading configuration from: {}", path.display());
+                builder = builder.add_source(File::from(path));
+            }
+            Err(ConfigError::NotFound(msg)) => {
+                tracing::info!(
+                    "No configuration file found ({}). Relying on environment variables.",
+                    msg
+                );
+            }
+            Err(e) => return Err(e),
+        }
 
-        tracing::debug!("Loading configuration from: {}", config_path.display());
+        // 2. Add Environment variables
+        // We use "BUMACS" as prefix, so BUMACS_SERVER_PORT maps to server.port
+        builder = builder.add_source(Environment::with_prefix("BUMACS").separator("_"));
 
-        // 2. Read the file contents into a string
-        let config_content = fs::read_to_string(&config_path).map_err(|e| {
-            ConfigError::LoadError(format!(
-                "Failed to read config file '{}': {}",
-                config_path.display(),
-                e
-            ))
-        })?; // Propagate I/O errors
+        // 3. Build and deserialize
+        let config = builder.build()?;
+        let app_config: Self = config.try_deserialize()?;
 
-        // 3. Parse the TOML string using toml::from_str
-        let config: Self = toml::from_str(&config_content).map_err(|e| {
-            ConfigError::LoadError(format!(
-                "Failed to parse TOML from '{}': {}",
-                config_path.display(),
-                e
-            ))
-        })?; // Propagate TOML parsing errors
-
-        // 4. Optional: Add validation logic here if needed
-        //    e.g., check if database.url is a valid format
-
-        Ok(config)
+        Ok(app_config)
     }
 
     /// Finds the configuration file path based on environment variable or default locations.
-    fn get_config_path(default_system_path: &str, local_dev_path: &str) -> Result<PathBuf, ConfigError> {
+    fn get_config_path(
+        default_system_path: &str,
+        local_dev_path: &str,
+    ) -> Result<PathBuf, ConfigError> {
         // Check environment variable first
         if let Ok(path_str) = env::var(ENV_VAR_PATH) {
             let path = PathBuf::from(path_str);
@@ -77,8 +84,8 @@ pub trait Config: Serialize + for<'de> Deserialize<'de> {
         }
 
         // Check local path (useful for development when running `cargo run`)
-        let is_production = env::var(ENV_VAR_MODE)
-            .map_or(true, |mode| mode.eq_ignore_ascii_case("production"));
+        let is_production =
+            env::var(ENV_VAR_MODE).map_or(true, |mode| mode.eq_ignore_ascii_case("production"));
         if !is_production {
             let local_path = PathBuf::from(local_dev_path);
             if local_path.exists() {
@@ -93,8 +100,7 @@ pub trait Config: Serialize + for<'de> Deserialize<'de> {
         // If no config file found
         let mut error_msg = format!(
             "Configuration file not found. Set {} or place it at {}",
-            ENV_VAR_PATH,
-            default_system_path,
+            ENV_VAR_PATH, default_system_path,
         );
         if !is_production {
             // Only suggest local path if not in production
@@ -178,4 +184,74 @@ pub enum ConfigError {
     LoadError(String),
     #[error("{0}")]
     NotFound(String),
+    #[error(transparent)]
+    Config(#[from] config::ConfigError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[derive(Serialize, Deserialize, Debug)]
+    struct TestConfig {
+        server: ServerConfig,
+        database: DatabaseConfig,
+        #[serde(default)]
+        security: SecurityConfig,
+        #[serde(alias = "instanceid")]
+        instance_id: Option<String>,
+    }
+
+    impl Config for TestConfig {
+        fn get_server_config(&self) -> ServerConfig {
+            self.server.clone()
+        }
+        fn get_database_config(&self) -> DatabaseConfig {
+            self.database.clone()
+        }
+        fn get_security_config(&self) -> SecurityConfig {
+            self.security.clone()
+        }
+        fn get_instance_id(&self) -> Option<String> {
+            self.instance_id.clone()
+        }
+    }
+
+    #[test]
+    fn test_load_from_env() {
+        // Set environment variables
+        unsafe {
+            env::set_var("BUMACS_SERVER_PORT", "9090");
+            env::set_var("BUMACS_SERVER_HOST", "127.0.0.1");
+            env::set_var("BUMACS_DATABASE_URL", "ws://test:8000");
+            env::set_var("BUMACS_DATABASE_USERNAME", "admin");
+            env::set_var("BUMACS_DATABASE_PASSWORD", "secret");
+            env::set_var("BUMACS_DATABASE_NAMESPACE", "test_ns");
+            env::set_var("BUMACS_DATABASE_DATABASE", "test_db");
+            env::set_var("BUMACS_INSTANCEID", "test-instance");
+        }
+
+        // Load config (pointing to non-existent files to force env usage)
+        let config = TestConfig::load("non_existent.toml", "non_existent_dev.toml")
+            .expect("Failed to load config from env");
+
+        // Verify values
+        assert_eq!(config.server.port, 9090);
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.database.url, "ws://test:8000");
+        assert_eq!(config.instance_id, Some("test-instance".to_string()));
+
+        // Clean up
+        unsafe {
+            env::remove_var("BUMACS_SERVER_PORT");
+            env::remove_var("BUMACS_SERVER_HOST");
+            env::remove_var("BUMACS_DATABASE_URL");
+            env::remove_var("BUMACS_DATABASE_USERNAME");
+            env::remove_var("BUMACS_DATABASE_PASSWORD");
+            env::remove_var("BUMACS_DATABASE_NAMESPACE");
+            env::remove_var("BUMACS_DATABASE_DATABASE");
+            env::remove_var("BUMACS_INSTANCEID");
+        }
+    }
 }

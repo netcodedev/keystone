@@ -112,6 +112,8 @@ impl<C: Config, RouterState> Application<WithConfig<C>, WithMigrations, RouterSt
                 .clone()
                 .run_migrations(&db_client, instance_id)
                 .await?;
+        } else {
+            return Err("Instance ID not found".into());
         }
         Ok(())
     }
