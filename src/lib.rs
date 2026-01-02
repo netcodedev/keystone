@@ -1,7 +1,9 @@
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use axum::{Router, routing::MethodRouter};
 use include_dir::Dir;
+use surrealdb::{Surreal, engine::any::Any};
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -19,7 +21,7 @@ pub struct WithConfig<C: Config> {
 pub struct WithoutConfig;
 pub struct WithMigrations(pub Migrations);
 pub struct WithoutMigrations;
-pub struct WithRouter(pub Router);
+pub struct WithRouter(pub Router<Arc<Surreal<Any>>>);
 pub struct WithoutRouter;
 
 pub struct Application<
@@ -158,7 +160,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     pub fn route(
         self,
         path: &str,
-        method_router: MethodRouter,
+        method_router: MethodRouter<Arc<Surreal<Any>>>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let router = Router::new().route(path, method_router);
         Application {
@@ -167,19 +169,45 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
             router: WithRouter(router),
         }
     }
+
+    pub fn nest(
+        self,
+        path: &str,
+        router: Router<Arc<Surreal<Any>>>,
+    ) -> Application<ConfigState, MigrationsState, WithRouter> {
+        let new_router = Router::new().nest(path, router);
+        Application {
+            config: self.config,
+            migrations: self.migrations,
+            router: WithRouter(new_router),
+        }
+    }
 }
 
 impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, WithRouter> {
     pub fn route(
         self,
         path: &str,
-        method_router: MethodRouter,
+        method_router: MethodRouter<Arc<Surreal<Any>>>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let router = self.router.0.route(path, method_router);
         Application {
             config: self.config,
             migrations: self.migrations,
             router: WithRouter(router),
+        }
+    }
+
+    pub fn nest(
+        self,
+        path: &str,
+        router: Router<Arc<Surreal<Any>>>,
+    ) -> Application<ConfigState, MigrationsState, WithRouter> {
+        let new_router = self.router.0.nest(path, router);
+        Application {
+            config: self.config,
+            migrations: self.migrations,
+            router: WithRouter(new_router),
         }
     }
 }
@@ -220,7 +248,12 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations, WithRouter> {
         };
         tracing::info!("Listening on {}", addr);
 
-        if let Err(e) = axum::serve(listener, self.router.0.clone()).await {
+        if let Err(e) = axum::serve(
+            listener,
+            self.router.0.clone().with_state(Arc::new(db_client)),
+        )
+        .await
+        {
             tracing::error!("Server error: {}", e);
             return ExitCode::FAILURE;
         }
@@ -232,13 +265,19 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations, WithRouter> {
 impl<C: Config> Application<WithConfig<C>, WithoutMigrations, WithRouter> {
     pub async fn start(&self) -> ExitCode {
         // ----- Connect to the database -----
-        match Database::connect(&self.config.config.get_database_config()).await {
-            Ok(_) => {}
+        // This impl block is for WithoutMigrations, but we still have a DB connection.
+        // However, in the start method for WithoutMigrations, we connect to DB but don't bind it to a variable that we can pass to state easily
+        // Wait, the start method in WithoutMigrations (lines 233-261) connects to DB but discards it?
+        // Line 235: match Database::connect(...) { Ok(_) => {} ... }
+        // We need to capture the DB client here too!
+
+        let db_client = match Database::connect(&self.config.config.get_database_config()).await {
+            Ok(db) => db,
             Err(err) => {
                 tracing::error!("Failed to connect to database: {}", err);
                 return ExitCode::FAILURE;
             }
-        }
+        };
 
         // ----- Start Server -----
         let server_config = self.config.config.get_server_config();
@@ -252,7 +291,12 @@ impl<C: Config> Application<WithConfig<C>, WithoutMigrations, WithRouter> {
         };
         tracing::info!("Listening on {}", addr);
 
-        if let Err(e) = axum::serve(listener, self.router.0.clone()).await {
+        if let Err(e) = axum::serve(
+            listener,
+            self.router.0.clone().with_state(Arc::new(db_client)),
+        )
+        .await
+        {
             tracing::error!("Server error: {}", e);
             return ExitCode::FAILURE;
         }
