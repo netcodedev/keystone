@@ -182,6 +182,17 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
             router: WithRouter(new_router),
         }
     }
+    pub fn merge(
+        self,
+        router: Router<Arc<Surreal<Any>>>,
+    ) -> Application<ConfigState, MigrationsState, WithRouter> {
+        let new_router = Router::new().merge(router);
+        Application {
+            config: self.config,
+            migrations: self.migrations,
+            router: WithRouter(new_router),
+        }
+    }
 }
 
 impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, WithRouter> {
@@ -204,6 +215,17 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
         router: Router<Arc<Surreal<Any>>>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let new_router = self.router.0.nest(path, router);
+        Application {
+            config: self.config,
+            migrations: self.migrations,
+            router: WithRouter(new_router),
+        }
+    }
+    pub fn merge(
+        self,
+        router: Router<Arc<Surreal<Any>>>,
+    ) -> Application<ConfigState, MigrationsState, WithRouter> {
+        let new_router = self.router.0.merge(router);
         Application {
             config: self.config,
             migrations: self.migrations,
