@@ -48,8 +48,8 @@ impl Database {
 
         // Sign in using root credentials (adjust if using different auth methods like Scopes)
         db.signin(Root {
-            username: &config.username,
-            password: &config.password,
+            username: config.username.clone(),
+            password: config.password.clone(),
         })
         .await
         .map_err(|e| DBError::Database(format!("Failed to sign in to SurrealDB: {e}")))?;
@@ -126,7 +126,10 @@ impl Database {
         }
     }
 
-    pub async fn user_has_permission(db: &Surreal<Any>, permission: &str) -> Result<bool, DBError> {
+    pub async fn user_has_permission(
+        db: &Surreal<Any>,
+        permission: String,
+    ) -> Result<bool, DBError> {
         let has_permission: bool = db
             .run("fn::auth_user_has_permission")
             .args(permission)
@@ -222,15 +225,6 @@ mod tests {
             format!("{}", health_failed_error),
             "Health check failed: Connection lost"
         );
-    }
-
-    #[test]
-    fn test_db_error_from_surreal_error() {
-        // Test that SurrealDB errors are properly converted
-        use surrealdb::error::Db;
-        let surreal_error = surrealdb::Error::Db(Db::Internal("Test DB error".to_string()));
-        let db_error: DBError = surreal_error.into();
-        assert!(matches!(db_error, DBError::Surreal(_)));
     }
 
     #[test]

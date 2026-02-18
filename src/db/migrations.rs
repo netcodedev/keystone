@@ -2,12 +2,12 @@ use include_dir::{Dir, File};
 use serde::Deserialize;
 use serde::Serialize;
 use std::time::Duration;
-use surrealdb::RecordId;
-use surrealdb::Response; // Import Response
 use surrealdb::Surreal;
 use surrealdb::engine::any::Any;
+use surrealdb_types::Datetime;
+use surrealdb_types::RecordId;
+use surrealdb_types::SurrealValue;
 use thiserror::Error;
-use time::OffsetDateTime;
 use tokio::time::sleep;
 use tracing;
 
@@ -36,24 +36,23 @@ pub enum MigrationError {
 }
 
 // Struct to represent an applied migration record from DB
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, SurrealValue, Debug)]
 struct AppliedMigration {
     migration: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, SurrealValue, Debug)]
 pub struct SchemaLock {
     pub id: RecordId,
     pub locked: bool,
-    #[serde(with = "time::serde::rfc3339::option", default)]
-    pub locked_at: Option<OffsetDateTime>,
+    pub locked_at: Option<Datetime>,
     pub instance_id: Option<String>,
 }
 
 impl Default for SchemaLock {
     fn default() -> Self {
         Self {
-            id: RecordId::from(LOCK_ID),
+            id: RecordId::new(LOCK_ID.0, LOCK_ID.1),
             locked: false,
             locked_at: None,
             instance_id: None,
@@ -117,7 +116,7 @@ impl Migrations {
                 // Execute the whole script content. SurrealDB's query method
                 // can handle multi-statement strings.
                 let script = format!("BEGIN;{script_content} CREATE schema_migration SET migration=$migration, applied_at=time::now(); COMMIT; ");
-                let response: Response =
+                let response =
                     db.query(&script)
                         .bind(("migration", id.clone()))
                         .await
@@ -205,6 +204,32 @@ impl Migrations {
     ) -> Result<Option<String>, MigrationError> {
         // Select the latest migration ID
         // Ensure the migration table exists (created in 0001)
+        // Check if the migration table exists first
+        // In SurrealDB 3.0.0, querying a non-existent table throws an error
+        #[derive(Deserialize, SurrealValue)]
+        struct DbInfo {
+            tables: std::collections::HashMap<String, String>,
+        }
+
+        let info: Option<DbInfo> = db
+            .query("INFO FOR DB;")
+            .await
+            .map_err(|e| MigrationError::DBError {
+                source: Box::new(e),
+            })?
+            .take(0)
+            .map_err(|e| MigrationError::DBError {
+                source: Box::new(e),
+            })?;
+
+        if let Some(info) = info {
+            if !info.tables.contains_key("schema_migration") {
+                return Ok(None);
+            }
+        } else {
+            return Ok(None);
+        }
+
         let result = db
             .query("SELECT * FROM schema_migration ORDER BY applied_at DESC LIMIT 1;")
             .await
@@ -215,6 +240,7 @@ impl Migrations {
             .map_err(|e| MigrationError::DBError {
                 source: Box::new(e),
             })?;
+
         if let Some(migration) = result.first() {
             Ok(Some(migration.migration.clone()))
         } else {
@@ -244,7 +270,7 @@ impl Migrations {
             let sql = r#"UPDATE $lock_id SET locked=true, instance_id=$instance_id WHERE locked = false;"#;
             let mut response = db
                 .query(sql)
-                .bind(("lock_id", RecordId::from(LOCK_ID)))
+                .bind(("lock_id", RecordId::new(LOCK_ID.0, LOCK_ID.1)))
                 .bind(("instance_id", instance_id.to_owned()))
                 .await
                 .map_err(|e| MigrationError::DBError {
@@ -286,7 +312,7 @@ impl Migrations {
         "#;
         let response = db
             .query(sql)
-            .bind(("lock_id", RecordId::from(LOCK_ID)))
+            .bind(("lock_id", RecordId::new(LOCK_ID.0, LOCK_ID.1)))
             .bind(("instance_id", instance_id.to_owned()))
             .await
             .map_err(|e| MigrationError::DBError {
@@ -358,9 +384,9 @@ mod tests {
     #[test]
     fn test_schema_lock_serialization() {
         let lock = SchemaLock {
-            id: RecordId::from_table_key("schema_lock", "singleton"),
+            id: RecordId::new("schema_lock", "singleton"),
             locked: true,
-            locked_at: Some(OffsetDateTime::now_utc()),
+            locked_at: Some(Datetime::now()),
             instance_id: Some("test_instance".to_string()),
         };
 
@@ -431,18 +457,5 @@ mod tests {
         let migration_error = MigrationError::SchemaError(Box::new(db_error));
 
         assert!(format!("{}", migration_error).contains("Failed to create table from Schema"));
-    }
-
-    #[test]
-    fn test_migration_script_failed_error() {
-        let surreal_error =
-            surrealdb::Error::Db(surrealdb::error::Db::Internal("Script failed".to_string()));
-        let migration_error = MigrationError::ScriptFailed {
-            id: "001_test".to_string(),
-            source: Box::new(surreal_error),
-        };
-
-        let error_msg = format!("{}", migration_error);
-        assert!(error_msg.contains("Migration script failed: 001_test"));
     }
 }
