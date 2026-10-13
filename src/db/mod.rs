@@ -8,7 +8,10 @@ use tokio::time::{Duration, timeout};
 
 use crate::config::DatabaseConfig;
 
+pub mod handle;
 pub mod migrations;
+
+pub use handle::{DbHandle, WatchdogConfig};
 
 #[derive(Debug, Error)]
 pub enum DBError {

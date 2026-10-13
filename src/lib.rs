@@ -1,15 +1,13 @@
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use axum::{Router, routing::MethodRouter};
 use include_dir::Dir;
-use surrealdb::{Surreal, engine::any::Any};
 use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::{
     config::Config,
-    db::{Database, migrations::Migrations},
+    db::{Database, DbHandle, migrations::Migrations},
 };
 
 pub mod config;
@@ -21,7 +19,7 @@ pub struct WithConfig<C: Config> {
 pub struct WithoutConfig;
 pub struct WithMigrations(pub Migrations);
 pub struct WithoutMigrations;
-pub struct WithRouter(pub Router<Arc<Surreal<Any>>>);
+pub struct WithRouter(pub Router<DbHandle>);
 pub struct WithoutRouter;
 
 pub struct Application<
@@ -160,7 +158,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     pub fn route(
         self,
         path: &str,
-        method_router: MethodRouter<Arc<Surreal<Any>>>,
+        method_router: MethodRouter<DbHandle>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let router = Router::new().route(path, method_router);
         Application {
@@ -173,7 +171,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     pub fn nest(
         self,
         path: &str,
-        router: Router<Arc<Surreal<Any>>>,
+        router: Router<DbHandle>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let new_router = Router::new().nest(path, router);
         Application {
@@ -184,7 +182,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     }
     pub fn merge(
         self,
-        router: Router<Arc<Surreal<Any>>>,
+        router: Router<DbHandle>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let new_router = Router::new().merge(router);
         Application {
@@ -199,7 +197,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     pub fn route(
         self,
         path: &str,
-        method_router: MethodRouter<Arc<Surreal<Any>>>,
+        method_router: MethodRouter<DbHandle>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let router = self.router.0.route(path, method_router);
         Application {
@@ -212,7 +210,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     pub fn nest(
         self,
         path: &str,
-        router: Router<Arc<Surreal<Any>>>,
+        router: Router<DbHandle>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let new_router = self.router.0.nest(path, router);
         Application {
@@ -223,7 +221,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
     }
     pub fn merge(
         self,
-        router: Router<Arc<Surreal<Any>>>,
+        router: Router<DbHandle>,
     ) -> Application<ConfigState, MigrationsState, WithRouter> {
         let new_router = self.router.0.merge(router);
         Application {
@@ -237,7 +235,7 @@ impl<ConfigState, MigrationsState> Application<ConfigState, MigrationsState, Wit
 impl<C: Config> Application<WithConfig<C>, WithMigrations, WithRouter> {
     pub async fn start(&self) -> ExitCode {
         // ----- Connect to the database -----
-        let db_client = match Database::connect(&self.config.config.get_database_config()).await {
+        let db_client = match DbHandle::connect(&self.config.config.get_database_config()).await {
             Ok(db) => db,
             Err(err) => {
                 tracing::error!("Failed to connect to database: {}", err);
@@ -246,7 +244,12 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations, WithRouter> {
         };
 
         // ----- Check database migrations -----
-        match self.migrations.0.has_pending_migrations(&db_client).await {
+        match self
+            .migrations
+            .0
+            .has_pending_migrations(&db_client.get())
+            .await
+        {
             Ok(true) => {
                 tracing::error!("Database is not up to date");
                 return ExitCode::FAILURE;
@@ -270,12 +273,7 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations, WithRouter> {
         };
         tracing::info!("Listening on {}", addr);
 
-        if let Err(e) = axum::serve(
-            listener,
-            self.router.0.clone().with_state(Arc::new(db_client)),
-        )
-        .await
-        {
+        if let Err(e) = axum::serve(listener, self.router.0.clone().with_state(db_client)).await {
             tracing::error!("Server error: {}", e);
             return ExitCode::FAILURE;
         }
@@ -287,13 +285,7 @@ impl<C: Config> Application<WithConfig<C>, WithMigrations, WithRouter> {
 impl<C: Config> Application<WithConfig<C>, WithoutMigrations, WithRouter> {
     pub async fn start(&self) -> ExitCode {
         // ----- Connect to the database -----
-        // This impl block is for WithoutMigrations, but we still have a DB connection.
-        // However, in the start method for WithoutMigrations, we connect to DB but don't bind it to a variable that we can pass to state easily
-        // Wait, the start method in WithoutMigrations (lines 233-261) connects to DB but discards it?
-        // Line 235: match Database::connect(...) { Ok(_) => {} ... }
-        // We need to capture the DB client here too!
-
-        let db_client = match Database::connect(&self.config.config.get_database_config()).await {
+        let db_client = match DbHandle::connect(&self.config.config.get_database_config()).await {
             Ok(db) => db,
             Err(err) => {
                 tracing::error!("Failed to connect to database: {}", err);
@@ -313,12 +305,7 @@ impl<C: Config> Application<WithConfig<C>, WithoutMigrations, WithRouter> {
         };
         tracing::info!("Listening on {}", addr);
 
-        if let Err(e) = axum::serve(
-            listener,
-            self.router.0.clone().with_state(Arc::new(db_client)),
-        )
-        .await
-        {
+        if let Err(e) = axum::serve(listener, self.router.0.clone().with_state(db_client)).await {
             tracing::error!("Server error: {}", e);
             return ExitCode::FAILURE;
         }
